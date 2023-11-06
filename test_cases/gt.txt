@@ -1,0 +1,34 @@
+conv_base,img0_mnist_0.0707.txt,not verified
+conv_base,img1_mnist_0.0014.txt,verified
+conv_base,img2_mnist_0.0494.txt,verified
+conv_base,img3_mnist_0.1240.txt,verified
+conv_base,img4_mnist_0.0458.txt,verified
+fc_base,img0_mnist_0.2456.txt,not verified
+fc_base,img1_mnist_0.0044.txt,verified
+fc_base,img2_mnist_0.0784.txt,verified
+fc_base,img3_mnist_0.0126.txt,verified
+fc_base,img4_mnist_0.0369.txt,verified
+fc_1,img0_mnist_0.1394.txt,not verified
+fc_1,img2_mnist_0.0692.txt,verified
+fc_2,img0_mnist_0.1086.txt,not verified
+fc_2,img3_mnist_0.0639.txt,verified
+fc_3,img0_mnist_0.1016.txt,not verified
+fc_3,img4_mnist_0.0780.txt,verified
+fc_4,img0_mnist_0.2096.txt,not verified
+fc_4,img4_mnist_0.0554.txt,verified
+fc_5,img0_mnist_0.2663.txt,not verified
+fc_5,img4_mnist_0.1197.txt,verified
+fc_6,img0_mnist_0.0495.txt,not verified
+fc_6,img3_mnist_0.0364.txt,verified
+fc_6,img0_cifar10_0.0128.txt,not verified
+fc_6,img2_cifar10_0.0025.txt,verified
+fc_7,img0_mnist_0.1497.txt,not verified
+fc_7,img4_mnist_0.0928.txt,verified
+conv_1,img0_mnist_0.2302.txt,not verified
+conv_1,img4_mnist_0.1241.txt,verified
+conv_2,img0_mnist_0.1872.txt,not verified
+conv_2,img2_mnist_0.1570.txt,verified
+conv_3,img0_cifar10_0.0058.txt,not verified
+conv_3,img3_cifar10_0.0220.txt,verified
+conv_4,img0_mnist_0.2724.txt,not verified
+conv_4,img2_mnist_0.1797.txt,verified

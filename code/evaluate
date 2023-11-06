@@ -1,0 +1,10 @@
+#!/bin/bash
+
+for net in fc_base fc_1 fc_2 fc_3 fc_4 fc_5 fc_6 fc_7 conv_base conv_1 conv_2 conv_3 conv_4
+do
+	echo Evaluating network ${net}...
+	for spec in `ls test_cases/${net}`
+	do
+		python code/verifier.py --net ${net} --spec test_cases/${net}/${spec}
+	done
+done
