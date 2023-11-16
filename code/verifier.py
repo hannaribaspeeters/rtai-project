@@ -27,11 +27,19 @@ class RelationalConstraint:
                     out += f"{self.weight[j,i]}*x_{i} + "
             out += f"{self.bias[j]}\n"
         return out
+
+    def resolve(self, lb: torch.Tensor, ub: torch.Tensor) -> torch.Tensor:
+        Wmax = torch.max(torch.zeros_like(self.weight), self.weight)
+        Wmin = torch.min(torch.zeros_like(self.weight), self.weight)
+        if self.lower:
+            return self.bias + Wmax @ lb[-1] + Wmin @ ub[-1]
+        return self.bias + Wmax @ ub[-1] + Wmin @ lb[-1]
     
 class Shape:
     def __init__(self, lb: torch.Tensor, ub: torch.Tensor, rel_lb: RelationalConstraint=None, rel_ub: RelationalConstraint=None, parent=None):
         self.lb = lb
         self.ub = ub
+        assert (self.lb <= self.ub).all()
         self.rel_lb = rel_lb
         self.rel_ub = rel_ub
         if self.rel_ub is not None:
@@ -44,15 +52,20 @@ class Shape:
     def backsubstitute(self):
         prev = self.parent
         if prev.rel_lb is None or prev.rel_ub is None:
+            self.lb = self.rel_lb.resolve(prev.lb, prev.ub)
+            self.ub = self.rel_ub.resolve(prev.lb, prev.ub)
+            assert (self.lb <= self.ub).all()
+            self.rel_lb = None
+            self.rel_ub = None
             return
-        print("Backsubstituting: \n",prev)
+                
         # lower bound
         rel = self.rel_lb
         W, b = rel.weight, rel.bias
         Wmax = torch.max(torch.zeros_like(W), W)
         Wmin = torch.min(torch.zeros_like(W), W)
-        rel_lb_W = Wmax @ prev.rel_ub.weight + Wmin @ prev.rel_lb.weight
-        rel_lb_b = b + W @ prev.rel_ub.bias + W @ prev.rel_lb.bias
+        rel_lb_W = Wmax @ prev.rel_lb.weight + Wmin @ prev.rel_ub.weight
+        rel_lb_b = b + Wmax @ prev.rel_lb.bias + Wmin @ prev.rel_ub.bias
         self.rel_lb = RelationalConstraint(rel_lb_W, rel_lb_b)
 
         # upper bound
@@ -60,13 +73,13 @@ class Shape:
         W, b = rel.weight, rel.bias
         Wmax = torch.max(torch.zeros_like(W), W)
         Wmin = torch.min(torch.zeros_like(W), W)
-        rel_ub_W = Wmax @ prev.rel_lb.weight + Wmin @ prev.rel_ub.weight
-        rel_ub_b = b + W @ prev.rel_lb.bias + W @ prev.rel_ub.bias
+        rel_ub_W = Wmax @ prev.rel_ub.weight + Wmin @ prev.rel_lb.weight
+        rel_ub_b = b + Wmax @ prev.rel_ub.bias + Wmin @ prev.rel_lb.bias
         self.rel_ub = RelationalConstraint(rel_ub_W, rel_ub_b, lower=False)
         self.parent = prev.parent
         self.backsubstitute()
 
-            
+
 
 class DeepPolyBase(torch.nn.Module):
     def __init__(self, verbose=False, name=""):
@@ -108,9 +121,21 @@ class DeepPolyReLu(DeepPolyBase):
         self.eps = eps
 
     def forward(self, x: Shape) -> Shape:
-        rel_ub = RelationalConstraint(self.eps*torch.eye(x.lb.shape[0]), -self.eps*x.lb, lower=False)
-        rel_lb = RelationalConstraint(torch.zeros(x.lb.shape[0], x.lb.shape[0]),torch.zeros(x.lb.shape[0]))
+        
+        rel_ub = RelationalConstraint(self.eps*torch.eye(x.lb.shape[-1]), -self.eps*x.lb[-1], lower=False)
+        rel_lb = RelationalConstraint(torch.zeros(x.lb.shape[-1], x.lb.shape[-1]),torch.zeros(x.lb.shape[-1]))
         out = Shape(F.relu(x.lb),F.relu(x.ub), rel_lb=rel_lb, rel_ub=rel_ub, parent=x)
+        self.print(out)
+        return out
+    
+class DeepPolyFlatten(DeepPolyBase):
+    def __init__(self, verbose=False, name=""):
+        super().__init__(verbose, name)
+    
+    def forward(self, x: Shape) -> Shape:
+        # assumes that this is the first layer
+
+        out = Shape(torch.flatten(x.lb, start_dim=1),torch.flatten(x.ub, start_dim=1))
         self.print(out)
         return out
     
@@ -122,28 +147,25 @@ def create_analyzer(net: nn.Module, verbose=False):
         if isinstance(layer, torch.nn.ReLU):
             layers.append(DeepPolyReLu(layer,0.5, name=name, verbose=verbose))
         if isinstance(layer, torch.nn.Flatten):
-            layers.append(layer)
+            layers.append(DeepPolyFlatten(name=name, verbose=verbose))
     return nn.Sequential(*layers)
 
 def analyze(
     net: torch.nn.Module, inputs: torch.Tensor, eps: float, true_label: int
 ) -> bool:
     analyzer_net = create_analyzer(net)
+    assert inputs.shape[0] == 1 # Only one batchsize one supported, TODO: generalize, should be easy, just need to add the batch dim to the shape class (and their constructions)
     lb = inputs - eps
     ub = inputs + eps
     lb.clamp_(min=0, max=1)
     ub.clamp_(min=0, max=1)
-    print(lb.min(), lb.max())   
-    print(ub.min(), ub.max())
-    boxes = torch.cat((lb, ub),dim=0)
-    outputs = analyzer_net(boxes)
-    print(outputs)
-    print("True label: ", true_label)
-    
-    lower_bound_true_class = outputs[0][true_label]
-    upper_bound_other_class = torch.cat((outputs[1][:true_label], outputs[1][true_label+1:]))
-    print(lower_bound_true_class)
-    print(upper_bound_other_class)
+    input_shape = Shape(lb, ub)
+    output_shape = analyzer_net(input_shape)
+    output_shape.backsubstitute()
+
+
+    lower_bound_true_class = output_shape.lb[true_label]
+    upper_bound_other_class = torch.cat((output_shape.ub[:true_label], output_shape.ub[true_label+1:]))
     result = torch.all(lower_bound_true_class > upper_bound_other_class)
     return result
 
