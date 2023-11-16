@@ -53,6 +53,7 @@ class Shape:
         self._input = False
         if parent is None:
             self._input = True
+            self._resolved = True
 
     def __repr__(self) -> str:
         return f"Shape(lb={self.lb.tolist()},ub={self.ub.tolist()})" + (f"\n{self.rel_lb}" if self.rel_lb is not None else "") + (f"\n{self.rel_ub}" if self.rel_ub is not None else "")
@@ -110,11 +111,9 @@ class DeepPolyLinear(DeepPolyBase):
         super().__init__(*args, **kwargs)
         self.weight = layer.weight
         self.bias = layer.bias
-
         self.layer = layer
 
     def forward(self, x: Shape) -> Shape:
-        # x.backsubstitute()
         rel_lb = RelationalConstraint(self.weight.data, self.bias.data)
         rel_ub = RelationalConstraint(self.weight.data, self.bias.data, lower=False)
 
@@ -163,10 +162,13 @@ class VerificationHead(nn.Linear):
     """
     Linear layer that verifies that the true class is the largest output. Constraint is verified if
     all values of the output shape lower bound are positive.
+
+    Basically calculates
+    x_true - x_other for all classes (and just x_true for the true class)
     """
     def __init__(self, num_classes: int, true_class=False) -> None:
         super().__init__(num_classes, num_classes, bias=True)
-        self.weight.data = -torch.eye(num_classes)
+        self.weight.data = -torch.eye(num_classes) 
         self.weight.data[:, true_class] = 1
         self.bias.data = torch.zeros(num_classes)
         self.true_class = true_class
