@@ -93,6 +93,7 @@ class Shape:
         self.parent = prev.parent # We update the parent to the parent of the parent, since we have resolved the parent
         self.backsubstitute()
 
+
 class DeepPolyBase(torch.nn.Module):
     def __init__(self, verbose=False, name=""):
         super().__init__()
@@ -106,7 +107,8 @@ class DeepPolyBase(torch.nn.Module):
     
     def forward(self, x: Shape) -> Shape:
         return x
-    
+
+
 class DeepPolyLinear(DeepPolyBase):
     def __init__(self, layer: nn.Linear, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -170,8 +172,7 @@ class DeepPolyConv2d(DeepPolyBase):
         self.print(out)
         return out
 
-    
-    
+
 class DeepPolyReLu(DeepPolyBase):
     def __init__(self, layer: torch.nn.ReLU, eps: float = 0.5, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -193,7 +194,8 @@ class DeepPolyReLu(DeepPolyBase):
         out = Shape(F.relu(x.lb),F.relu(x.ub), rel_lb=rel_lb, rel_ub=rel_ub, parent=x)
         self.print(out)
         return out
-    
+
+
 class DeepPolyFlatten(DeepPolyBase):
     def __init__(self, verbose=False, name=""):
         super().__init__(verbose, name)
@@ -202,6 +204,33 @@ class DeepPolyFlatten(DeepPolyBase):
         # assumes that this is the first layer
         out = Shape(torch.flatten(x.lb),torch.flatten(x.ub))
         self.print(out)
+        return out
+
+
+class DeepPolyLeakyReLU(DeepPolyBase):
+    def __init__(self, layer: torch.nn.LeakyReLU, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.layer = layer
+
+    def forward(self, x: Shape) -> Shape:
+        alfa = self.layer.negative_slope
+        x.backsubstitute()
+        # option 1 (lb = 0) if u <= -l
+
+        beta = torch.full(x.lb.size(), alfa)
+        beta = torch.nn.Parameter(beta)
+
+        rel1 = RelationalConstraint(torch.diag(torch.div(x.ub-alfa*x.lb, x.ub-x.lb)),torch.div(x.ub*x.lb*(1-alfa), x.ub-x.lb), lower=False)
+        rel2 = RelationalConstraint(torch.diag(beta), torch.zeros(x.lb.shape), lower=False)
+
+        if alfa<=1:
+            out = Shape(F.leaky_relu(x.lb),F.leaky_relu(x.ub), rel_lb=rel1, rel_ub=rel2, parent=x)
+
+        else:
+            out = Shape(F.leaky_relu(x.lb),F.leaky_relu(x.ub), rel_lb=rel2, rel_ub=rel1, parent=x)
+
+        self.print(out)
+
         return out
 
 class VerificationHead(nn.Linear):
@@ -233,7 +262,10 @@ def create_analyzer(net: nn.Module, verbose=False):
             layers.append(DeepPolyFlatten(name=name, verbose=verbose))
         if isinstance(layer, torch.nn.Conv2d):
             layers.append(DeepPolyConv2d(layer, name=name, verbose=verbose))
+        if isinstance(layer, torch.nn.LeakyReLU):
+                layers.append(DeepPolyLeakyReLU(layer, name=name, verbose=verbose))
     return nn.Sequential(*layers)
+
 
 def analyze(
     net: torch.nn.Module, inputs: torch.Tensor, eps: float, true_label: int, min: float = 0, max: float = 1) -> bool:

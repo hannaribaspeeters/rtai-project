@@ -64,6 +64,13 @@ You can run this script from the root directory using the following commands:
 chmod +x code/evaluate
 code/evaluate
 ```
+### Types of activations in nets
+- fc_base : DLN
+- fc_1, fc_2 : RELU
+- fc_3: Leaky Relu (slope<1)
+- fc_4: Leaky Relu (slope>1)
+- fc_5, fc_6: Leaky Relu Mixed 
+- fc_7, fc_8: Leaky  Relu Deep
 
 ## Submission 
 Note that on the dates specified in the presentation, we will pull the master branch both for preliminary feedback and final grading (and push the results to a new branch). Please have your solution on this (master) branch at that point in time.
