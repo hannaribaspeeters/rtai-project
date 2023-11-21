@@ -215,19 +215,21 @@ class DeepPolyLeakyReLU(DeepPolyBase):
     def forward(self, x: Shape) -> Shape:
         alfa = self.layer.negative_slope
         x.backsubstitute()
-        # option 1 (lb = 0) if u <= -l
 
+        # in the case alfa<1 beta is in [alfa, 1]
+        # in the case alfa>1 beta is in [1, alfa]
+        # I initialize beta to alfa and from there we have to see how we optimize
         beta = torch.full(x.lb.size(), alfa)
         beta = torch.nn.Parameter(beta)
 
-        rel1 = RelationalConstraint(torch.diag(torch.div(x.ub-alfa*x.lb, x.ub-x.lb)),torch.div(x.ub*x.lb*(1-alfa), x.ub-x.lb), lower=False)
+        rel1 = RelationalConstraint(torch.diag(torch.div(x.ub-alfa*x.lb, x.ub-x.lb)), torch.div(x.ub*x.lb*(1-alfa), x.ub-x.lb), lower=False)
         rel2 = RelationalConstraint(torch.diag(beta), torch.zeros(x.lb.shape), lower=False)
 
         if alfa<=1:
-            out = Shape(F.leaky_relu(x.lb),F.leaky_relu(x.ub), rel_lb=rel1, rel_ub=rel2, parent=x)
+            out = Shape(F.leaky_relu(x.lb, alfa),F.leaky_relu(x.ub, alfa), rel_lb=rel1, rel_ub=rel2, parent=x)
 
         else:
-            out = Shape(F.leaky_relu(x.lb),F.leaky_relu(x.ub), rel_lb=rel2, rel_ub=rel1, parent=x)
+            out = Shape(F.leaky_relu(x.lb, alfa),F.leaky_relu(x.ub, alfa), rel_lb=rel2, rel_ub=rel1, parent=x)
 
         self.print(out)
 
