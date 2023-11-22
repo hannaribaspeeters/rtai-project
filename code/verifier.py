@@ -8,6 +8,8 @@ from utils.loading import parse_spec
 
 DEVICE = "cpu"
 
+def debug(*args, **kwargs):
+    pass#print(*args, **kwargs)
 
 class RelationalConstraint:
     def __init__(self, weight, bias, lower=True): 
@@ -15,6 +17,10 @@ class RelationalConstraint:
         self.weight = weight # (out_features, in_features)
         self.bias = bias # (out_features)
         self.lower = lower # Only used for printing
+
+        assert self.weight.shape[0] == self.bias.shape[0]
+        assert len(self.weight.shape) == 2 # (out_features, in_features)
+        assert len(self.bias.shape) == 1 # (out_features)
 
     def __repr__(self) -> str:
         in_features = self.weight.shape[1]
@@ -28,7 +34,7 @@ class RelationalConstraint:
             out += f"{self.bias[j]}\n"
         return out
 
-    def resolve(self, lb: torch.Tensor, ub: torch.Tensor) -> torch.Tensor:
+    def evaluate(self, lb: torch.Tensor, ub: torch.Tensor) -> torch.Tensor:
         Wmax = torch.max(torch.zeros_like(self.weight), self.weight)
         Wmin = torch.min(torch.zeros_like(self.weight), self.weight)
         if self.lower:
@@ -56,40 +62,47 @@ class Shape:
             self._resolved = True
 
     def __repr__(self) -> str:
-        return f"Shape(lb={self.lb.tolist()},ub={self.ub.tolist()})" + (f"\n{self.rel_lb}" if self.rel_lb is not None else "") + (f"\n{self.rel_ub}" if self.rel_ub is not None else "")
-        
+        return f"Shape(lb={[round(el, 3) for el in self.lb.tolist()]},ub={[round(el, 3) for el in self.ub.tolist()]})" + (f"\n{self.rel_lb}" if self.rel_lb is not None else "") + (f"\n{self.rel_ub}" if self.rel_ub is not None else "")
+
     def backsubstitute(self):
         if self._resolved:
             return
-        prev = self.parent
-        if prev._input: # Recursion base case
-            # resolve the relational constraints with respect to the input
-            self.lb = self.rel_lb.resolve(prev.lb, prev.ub)
-            self.ub = self.rel_ub.resolve(prev.lb, prev.ub)
-            assert (self.lb <= self.ub).all()
-            self._resolved = True
-            return
+        rel_lb = self.rel_lb
+        rel_ub = self.rel_ub
+        node = self.parent
+        assert (self.lb <= self.ub).all()
+
+        while(not node._input):
+            # lower bound
+            W, b = rel_lb.weight, rel_lb.bias
+            Wmax = torch.max(torch.zeros_like(W), W)
+            Wmin = torch.min(torch.zeros_like(W), W)
+
+            rel_lb_W = Wmax @ node.rel_lb.weight + Wmin @ node.rel_ub.weight
+            rel_lb_b = b + Wmax @ node.rel_lb.bias + Wmin @ node.rel_ub.bias
+            rel_lb = RelationalConstraint(rel_lb_W, rel_lb_b)
+
+            # upper bound
+            rel = rel_ub
+            W, b = rel.weight, rel.bias
+            Wmax = torch.max(torch.zeros_like(W), W)
+            Wmin = torch.min(torch.zeros_like(W), W)
+            rel_ub_W = Wmax @ node.rel_ub.weight + Wmin @ node.rel_lb.weight
+            rel_ub_b = b + Wmax @ node.rel_ub.bias + Wmin @ node.rel_lb.bias
+            rel_ub = RelationalConstraint(rel_ub_W, rel_ub_b, lower=False)
+
+            node = node.parent
+
+        # resolve the relational constraints with respect to the input
+        self.lb = torch.max(rel_lb.evaluate(node.lb, node.ub), self.lb)
+        self.ub = torch.min(rel_ub.evaluate(node.lb, node.ub), self.ub)
         
-        # lower bound
-        rel = self.rel_lb
-        W, b = rel.weight, rel.bias
-        Wmax = torch.max(torch.zeros_like(W), W)
-        Wmin = torch.min(torch.zeros_like(W), W)
-        rel_lb_W = Wmax @ prev.rel_lb.weight + Wmin @ prev.rel_ub.weight
-        rel_lb_b = b + Wmax @ prev.rel_lb.bias + Wmin @ prev.rel_ub.bias
-        self.rel_lb = RelationalConstraint(rel_lb_W, rel_lb_b)
-
-        # upper bound
-        rel = self.rel_ub
-        W, b = rel.weight, rel.bias
-        Wmax = torch.max(torch.zeros_like(W), W)
-        Wmin = torch.min(torch.zeros_like(W), W)
-        rel_ub_W = Wmax @ prev.rel_ub.weight + Wmin @ prev.rel_lb.weight
-        rel_ub_b = b + Wmax @ prev.rel_ub.bias + Wmin @ prev.rel_lb.bias
-        self.rel_ub = RelationalConstraint(rel_ub_W, rel_ub_b, lower=False)
-        self.parent = prev.parent # We update the parent to the parent of the parent, since we have resolved the parent
-        self.backsubstitute()
-
+        # check for validity
+        assert self.lb.isfinite().all()
+        assert self.ub.isfinite().all()
+        assert (self.lb <= self.ub).all()
+        self._resolved = True
+        debug("Resolved:", self)
 
 
 class DeepPolyBase(torch.nn.Module):
@@ -114,15 +127,17 @@ class DeepPolyLinear(DeepPolyBase):
         self.layer = layer
 
     def forward(self, x: Shape) -> Shape:
+        debug("LinIn:", x)
+        # 
         rel_lb = RelationalConstraint(self.weight.data, self.bias.data)
         rel_ub = RelationalConstraint(self.weight.data, self.bias.data, lower=False)
 
         c = (x.lb+x.ub)/2.
         r = (x.ub-x.lb)/2.
         c = F.linear(c,self.weight,self.bias)
-
         r = F.linear(r,torch.abs(self.weight),None)
-        out = Shape(c-r,c+r, rel_lb=rel_lb, rel_ub=rel_ub, parent=x)
+
+        out = Shape(c-r, c+r, rel_lb=rel_lb, rel_ub=rel_ub, parent=x)
         self.print(out)
         return out
     
@@ -134,7 +149,19 @@ class DeepPolyReLu(DeepPolyBase):
 
     def forward(self, x: Shape) -> Shape:
         x.backsubstitute()
-        # option 1 (lb = 0) if u <= -l
+        
+        # Case 1: Below-zero -> set to zero
+        case1 = (x.ub < 0.)
+        W_l, b_l = torch.zeros_like(x.lb), torch.zeros_like(x.lb)
+        W_u, b_u = torch.zeros_like(x.lb), torch.zeros_like(x.lb)
+
+        # Case 2: Above-zero -> propagate
+        case2 = (x.lb > 0.)
+        W_l, b_l = torch.where(case2, torch.ones_like(x.lb), W_l), b_l
+        W_u, b_u = torch.where(case2, torch.ones_like(x.lb), W_u), b_u
+
+        # Case 3: Crossing
+        # Compute lambda for the lower bound (such that the area is minimal)
         lambda_lb = torch.ones_like(x.lb)
         lambda_lb[x.ub <= -x.lb] = 0
 
@@ -142,8 +169,15 @@ class DeepPolyReLu(DeepPolyBase):
         # We can later register as a parameter and learn this lambda
         # lambda_lb = torch.nn.Parameter(lambda_lb)
 
-        rel_ub = RelationalConstraint(torch.diag(torch.div(x.ub, x.ub-x.lb)),-torch.div(x.ub*x.lb, x.ub-x.lb), lower=False)
-        rel_lb = RelationalConstraint(torch.diag(lambda_lb),torch.zeros(x.lb.shape))
+        crossing = ~case1 & ~case2
+        W_l = torch.where(crossing, lambda_lb, W_l)
+        # We don't need to update b_l, since it is zero
+        W_u = torch.where(crossing, torch.div(x.ub, x.ub-x.lb), W_l)
+        b_u = torch.where(crossing, -torch.div(x.ub*x.lb, x.ub-x.lb), b_l)
+       
+
+        rel_ub = RelationalConstraint(torch.diag(W_u), b_u, lower=False)
+        rel_lb = RelationalConstraint(torch.diag(W_l), b_l)
         out = Shape(F.relu(x.lb),F.relu(x.ub), rel_lb=rel_lb, rel_ub=rel_ub, parent=x)
         self.print(out)
         return out
@@ -198,7 +232,7 @@ def analyze(
     for param in net.parameters():
         param.requires_grad = False
 
-    analyzer_net = create_analyzer(net)
+    analyzer_net = create_analyzer(net, verbose=False)
     assert inputs.shape[0] == 1 # Only one batchsize one supported, TODO: generalize, should be easy, just need to add the batch dim to the shape class (and their constructions)
     lb = inputs - eps
     ub = inputs + eps
@@ -209,7 +243,7 @@ def analyze(
     lb = lb.squeeze(0)
     ub = ub.squeeze(0)
 
-    input_shape = Shape(lb, ub)
+    input_shape = Shape(lb, ub)     
     output_shape = analyzer_net(input_shape)
     output_shape.backsubstitute()
 
