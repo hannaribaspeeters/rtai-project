@@ -2,6 +2,9 @@ import argparse
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchvision.transforms as transforms
+import numpy as np
+import scipy.linalg as linalg
 
 from networks import get_network
 from utils.loading import parse_spec
@@ -118,13 +121,13 @@ class DeepPolyBase(torch.nn.Module):
     
     def forward(self, x: Shape) -> Shape:
         return x
-
+    
 class DeepPolyLinear(DeepPolyBase):
-    def __init__(self, layer: torch.nn.Linear, *args, **kwargs):
+    def __init__(self, layer: nn.Linear, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.layer = layer
         self.weight = layer.weight
         self.bias = layer.bias
-        self.layer = layer
 
     def forward(self, x: Shape) -> Shape:
         debug("LinIn:", x)
@@ -134,12 +137,57 @@ class DeepPolyLinear(DeepPolyBase):
 
         c = (x.lb+x.ub)/2.
         r = (x.ub-x.lb)/2.
-        c = F.linear(c,self.weight,self.bias)
-        r = F.linear(r,torch.abs(self.weight),None)
+        c = torch.matmul(self.weight,c)+self.bias
+         r = torch.matmul(torch.abs(self.weight),r)
 
         out = Shape(c-r, c+r, rel_lb=rel_lb, rel_ub=rel_ub, parent=x)
         self.print(out)
         return out
+    
+def outputShapeConv2d(input_len,kernel_shape,padding,stride):
+    h=w=input_len
+    _,_,kh,kw = kernel_shape
+    ph,pw = padding
+    sh,sw = stride
+    output_height = int((h + ph+pw - kh) / (sh) + 1)
+    output_width= int((w + pw+ph - kw) / (sw) + 1)
+    return (output_height,output_width)
+
+    
+class DeepPolyConv2d(DeepPolyBase):
+    def __init__(self, layer: torch.nn.Conv2d, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        #Reshape the weight and bias to be compatible with the linear layer
+        self.weight = layer.weight.view(layer.weight.shape[0],-1)
+        self.bias = layer.bias.unsqueeze(1)
+        self.layer = layer
+
+    def forward(self, x: Shape) -> Shape:
+        rel_lb = RelationalConstraint(self.weight.data, self.bias.data)
+        rel_ub = RelationalConstraint(self.weight.data, self.bias.data, lower=False)
+        fold_params = dict(kernel_size=self.layer.kernel_size, dilation=self.layer.dilation, padding=self.layer.padding, stride=self.layer.stride)
+
+        c = (x.lb+x.ub)/2.
+        r = (x.ub-x.lb)/2.
+
+        unfold = torch.nn.Unfold(**fold_params)
+        c_unf = unfold(c)
+        r_unf = unfold(r)
+
+        c_unf = self.weight @ c_unf + self.bias
+        r_unf = torch.abs(self.weight) @ r_unf
+        
+        output_shape = outputShapeConv2d(x.lb.shape[-1],self.layer.weight.shape,self.layer.padding,self.layer.stride)
+        fold = torch.nn.Fold(output_size=output_shape,kernel_size=1)
+
+        c = fold(c_unf)
+        r = fold(r_unf)
+
+        out = Shape(c-r,c+r, rel_lb=rel_lb, rel_ub=rel_ub, parent=x)
+        self.print(out)
+        return out
+
+    
     
 class DeepPolyReLu(DeepPolyBase):
     def __init__(self, layer: torch.nn.ReLU, eps: float = 0.5, *args, **kwargs):
@@ -219,6 +267,8 @@ def create_analyzer(net: nn.Module, verbose=False):
             layers.append(DeepPolyReLu(layer,0.5, name=name, verbose=verbose))
         if isinstance(layer, torch.nn.Flatten):
             layers.append(DeepPolyFlatten(name=name, verbose=verbose))
+        if isinstance(layer, torch.nn.Conv2d):
+            layers.append(DeepPolyConv2d(layer, name=name, verbose=verbose))
     return nn.Sequential(*layers)
 
 def analyze(
@@ -238,10 +288,9 @@ def analyze(
     ub = inputs + eps
     lb.clamp_(min=min, max=max)
     ub.clamp_(min=min, max=max)
-
-    # remove batch dimension
-    lb = lb.squeeze(0)
-    ub = ub.squeeze(0)
+    #Add batch dim
+    lb = lb.unsqueeze(0)
+    ub = ub.unsqueeze(0)
 
     input_shape = Shape(lb, ub)     
     output_shape = analyzer_net(input_shape)
