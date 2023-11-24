@@ -138,13 +138,23 @@ class DeepPolyLinear(DeepPolyBase):
         c = (x.lb+x.ub)/2.
         r = (x.ub-x.lb)/2.
         c = torch.matmul(self.weight,c)+self.bias
-         r = torch.matmul(torch.abs(self.weight),r)
+        r = torch.matmul(torch.abs(self.weight),r)
 
         out = Shape(c-r, c+r, rel_lb=rel_lb, rel_ub=rel_ub, parent=x)
         self.print(out)
         return out
     
 def outputShapeConv2d(input_len,kernel_shape,padding,stride):
+    """
+    Compute the output shape of a 2D convolution operation image.
+    Parameters:
+    input_len (int): The len of the input image.
+    kernel_shape (torch.Tensor): The convolution kernel of shape (out_channels, in_channels, kernel_height, kernel_width).
+    padding (int,int): The padding size tuple
+    stride (int,int): The stride size tuple
+    Returns:
+    (int,int): The output shape of the convolution operation.
+    """
     h=w=input_len
     _,_,kh,kw = kernel_shape
     ph,pw = padding
@@ -153,40 +163,102 @@ def outputShapeConv2d(input_len,kernel_shape,padding,stride):
     output_width= int((w + pw+ph - kw) / (sw) + 1)
     return (output_height,output_width)
 
+def conv2dToAfinneBase(image_size,kernel,stride):
+    """
+    Compute the convolution as a matrix multiplication without padding.
+    Parameters:
+    image_size (int,int): The size of the input image (length_image,number_of_channels).
+    kernel (torch.Tensor): The convolution kernel of shape (out_channels, in_channels, kernel_height, kernel_width).
+    stride (int,int): The stride size tuple
+    Returns:
+    torch.Tensor: The convolution as a matrix multiplication without padding of shape (out_channels,in_channels,output_image_hight,length_image)
+    """
+    n,c = image_size
+    sw,sh = stride
+    assert(sw==sh) # Assume same stride
+    h=w=int(np.sqrt(n))
+    dim_out,_,kh,kw = kernel.shape #Assume square kernel
+    assert(kh==kw)
+    output_shape_h = outputShapeConv2d(h,kernel.shape,(0,0),stride)[0]
+
+    #Add base row
+    base_row = torch.zeros(dim_out,c,1,h*w)
+    for i in range(kw):
+        base_row[:,:,0,i*w:i*w+kw] = kernel[:,:,i,:]
+
+    #Repeat base row with an offset to create first pass of the kernel (first output row)
+    base_matrix = torch.zeros((dim_out,c,output_shape_h,h*w))
+    for i in range(output_shape_h):
+        base_matrix[:,:,i,:] = torch.roll(base_row,i*sw)[:,:,0,:]
+    output = base_matrix
+
+    #Repeat the base matrix with an offset to create the rest of the passes of the kernel (other output rows)
+    for i in range(output_shape_h-1):
+        output = torch.cat((output,torch.roll(base_matrix,sw*(i+1)*w)),dim=2)
+    return output
+
+#works only for square images and square kernels
+def conv2dToAfinne(image_len,kernel,padding,stride):
+    """
+    Compute the convolution as a matrix multiplication.
+    Parameters:
+    image_len torch.tensor: The len of the input image, image is flattened.
+    kernel (torch.Tensor): The convolution kernel of shape (out_channels, in_channels, kernel_height, kernel_width).
+    padding (int,int): The padding size tuple
+    stride (int,int): The stride size tuple
+    Returns:
+    torch.Tensor: The convolution as a matrix multiplication of shape (output_length,length_image)
+    """
+    dim_out,dim_in,kh,kw = kernel.shape #Assume square kernel
+    assert(kh==kw)
+    n = image_len[-1]
+    h=w = int(np.sqrt(n/dim_in))
     
+    padded_image = transforms.Pad(padding)(torch.zeros(dim_in,h,w))
+    #Create fake image to get the non padded index
+    non_padded_index = (transforms.Pad(padding)(torch.ones((h,w))).view(-1) !=0).nonzero().view(-1)
+    #Do the convolution with padded image
+    stacked_kernels = conv2dToAfinneBase(padded_image.view(-1,dim_in).shape,kernel,stride)
+    #Remove the padded columns
+    stacked_kernels = stacked_kernels[:,:,:,non_padded_index]
+    #Reshape to get the correct width, adding 0 columns to match output size
+    missing_columns = n-stacked_kernels.shape[-1]
+    stacked_kernels = torch.nn.functional.pad(stacked_kernels, (0,missing_columns), value=0)
+    #Create offset to align kernels with their corresponding channels
+    for i in range(stacked_kernels.shape[1]):
+        length_image = int(h*w)
+        stacked_kernels[:,i,:,:] = torch.roll(stacked_kernels[:,i,:,:],i*length_image)
+    stacked_kernels = stacked_kernels.view(dim_out,-1,stacked_kernels.shape[2],n).sum(dim=1)
+    return stacked_kernels.reshape(-1,n)
+
 class DeepPolyConv2d(DeepPolyBase):
     def __init__(self, layer: torch.nn.Conv2d, *args, **kwargs):
         super().__init__(*args, **kwargs)
         #Reshape the weight and bias to be compatible with the linear layer
-        self.weight = layer.weight.view(layer.weight.shape[0],-1)
-        self.bias = layer.bias.unsqueeze(1)
         self.layer = layer
 
     def forward(self, x: Shape) -> Shape:
+        self.weight = conv2dToAfinne(x.lb.shape,self.layer.weight,self.layer.padding,self.layer.stride)
+        dim_in = self.layer.weight.shape[1]
+        h=w = int(np.sqrt(x.lb.shape[-1]/dim_in))
+        output_h,output_w = outputShapeConv2d(h,self.layer.weight.shape,self.layer.padding,self.layer.stride)
+        self.bias = self.layer.bias.unsqueeze(1).repeat(1,output_w*output_h).flatten()
+
         rel_lb = RelationalConstraint(self.weight.data, self.bias.data)
         rel_ub = RelationalConstraint(self.weight.data, self.bias.data, lower=False)
-        fold_params = dict(kernel_size=self.layer.kernel_size, dilation=self.layer.dilation, padding=self.layer.padding, stride=self.layer.stride)
 
         c = (x.lb+x.ub)/2.
         r = (x.ub-x.lb)/2.
 
-        unfold = torch.nn.Unfold(**fold_params)
-        c_unf = unfold(c)
-        r_unf = unfold(r)
+        #Check that the convolution is correct for c 
+        #real_conv = F.conv2d(c.view(1,dim_in,h,w),self.layer.weight,self.layer.bias,stride=self.layer.stride,padding=self.layer.padding)
+        c = self.weight @ c + self.bias
+        #print((real_conv.view(-1)-c).sum())
 
-        c_unf = self.weight @ c_unf + self.bias
-        r_unf = torch.abs(self.weight) @ r_unf
-        
-        output_shape = outputShapeConv2d(x.lb.shape[-1],self.layer.weight.shape,self.layer.padding,self.layer.stride)
-        fold = torch.nn.Fold(output_size=output_shape,kernel_size=1)
-
-        c = fold(c_unf)
-        r = fold(r_unf)
-
+        r = torch.abs(self.weight) @ r
         out = Shape(c-r,c+r, rel_lb=rel_lb, rel_ub=rel_ub, parent=x)
         self.print(out)
         return out
-
     
     
 class DeepPolyReLu(DeepPolyBase):
@@ -288,9 +360,10 @@ def analyze(
     ub = inputs + eps
     lb.clamp_(min=min, max=max)
     ub.clamp_(min=min, max=max)
+    
     #Add batch dim
-    lb = lb.unsqueeze(0)
-    ub = ub.unsqueeze(0)
+    lb = lb.view(-1)
+    ub = ub.view(-1)
 
     input_shape = Shape(lb, ub)     
     output_shape = analyzer_net(input_shape)
