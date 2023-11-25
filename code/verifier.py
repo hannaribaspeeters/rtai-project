@@ -299,7 +299,6 @@ class DeepPolyReLu(DeepPolyBase):
         W_u = torch.where(crossing, torch.div(x.ub, x.ub-x.lb), W_l)
         b_u = torch.where(crossing, -torch.div(x.ub*x.lb, x.ub-x.lb), b_l)
 
-
         rel_ub = RelationalConstraint(torch.diag(W_u), b_u, lower=False)
         rel_lb = RelationalConstraint(torch.diag(W_l), b_l)
         out = Shape(F.relu(x.lb),F.relu(x.ub), rel_lb=rel_lb, rel_ub=rel_ub, parent=x)
@@ -326,20 +325,41 @@ class DeepPolyLeakyReLU(DeepPolyBase):
         alfa = self.layer.negative_slope
         x.backsubstitute()
 
+        # Case 1: Below-zero -> propagate(linear with slope=alfa)
+        case1 = (x.ub < 0.)
+        W_l, b_l = torch.full(x.lb.size(), alfa), torch.zeros_like(x.lb)
+        W_u, b_u = torch.full(x.lb.size(), alfa), torch.zeros_like(x.lb)
+
+        # Case 2: Above-zero -> propagate
+        case2 = (x.lb > 0.)
+        W_l, b_l = torch.where(case2, torch.ones_like(x.lb), W_l), b_l
+        W_u, b_u = torch.where(case2, torch.ones_like(x.lb), W_u), b_u
+
+        # Case 3: crossing
+
+        crossing = ~case1 & ~case2
+
         # in the case alfa<1 beta is in [alfa, 1]
         # in the case alfa>1 beta is in [1, alfa]
         # I initialize beta to alfa and from there we have to see how we optimize
-        beta = torch.full(x.lb.size(), alfa)
+        beta = torch.full(x.lb.size(), alfa, requires_grad=False)
+        beta = beta.float().requires_grad_()
         beta = torch.nn.Parameter(beta)
 
-        rel1 = RelationalConstraint(torch.diag(torch.div(x.ub-alfa*x.lb, x.ub-x.lb)), torch.div(x.ub*x.lb*(1-alfa), x.ub-x.lb), lower=False)
-        rel2 = RelationalConstraint(torch.diag(beta), torch.zeros(x.lb.shape), lower=False)
+        W_l = torch.where(crossing, beta, W_l)
+        b_l = torch.zeros_like(x.lb)
 
-        if alfa<=1:
-            out = Shape(F.leaky_relu(x.lb, alfa),F.leaky_relu(x.ub, alfa), rel_lb=rel1, rel_ub=rel2, parent=x)
+        W_u = torch.where(crossing, torch.div(x.ub-alfa*x.lb, x.ub-x.lb), W_u)
+        b_u = torch.where(crossing, torch.div(x.ub*x.lb*(1-alfa), x.ub-x.lb), b_u)
+
+        rel_lb = RelationalConstraint(torch.diag(W_l), b_l)
+        rel_ub = RelationalConstraint(torch.diag(W_u), b_u, lower=False)
+
+        if alfa <= 1:
+            out = Shape(F.leaky_relu(x.lb, alfa), F.leaky_relu(x.ub, alfa), rel_lb=rel_lb, rel_ub=rel_ub, parent=x)
 
         else:
-            out = Shape(F.leaky_relu(x.lb, alfa),F.leaky_relu(x.ub, alfa), rel_lb=rel2, rel_ub=rel1, parent=x)
+            out = Shape(F.leaky_relu(x.lb, alfa), F.leaky_relu(x.ub, alfa), rel_lb=rel_ub, rel_ub=rel_lb, parent=x)
 
         self.print(out)
 
@@ -375,7 +395,7 @@ def create_analyzer(net: nn.Module, verbose=False):
         if isinstance(layer, torch.nn.Conv2d):
             layers.append(DeepPolyConv2d(layer, name=name, verbose=verbose))
         if isinstance(layer, torch.nn.LeakyReLU):
-                layers.append(DeepPolyLeakyReLU(layer, name=name, verbose=verbose))
+            layers.append(DeepPolyLeakyReLU(layer, name=name, verbose=verbose))
     return nn.Sequential(*layers)
 
 
