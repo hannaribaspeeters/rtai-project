@@ -1,6 +1,12 @@
 #!/bin/bash
 
-for net in conv_3 # fc_1 fc_2 fc_3 fc_4 fc_5 fc_6 fc_7 conv_base conv_1 conv_2 conv_3 conv_4
+all="fc_base fc_1 fc_2 fc_3 fc_4 fc_5 fc_6 fc_7 conv_base conv_1 conv_2 conv_3 conv_4"
+
+# if arguments are given, just run the arguments
+if [ $# -gt 0 ]; then
+	all=$@
+fi
+for net in $all;
 do
 	echo Evaluating network ${net}...
 	for spec in `ls test_cases/${net}`
