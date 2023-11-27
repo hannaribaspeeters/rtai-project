@@ -5,6 +5,7 @@ import torch.nn.functional as F
 import torchvision.transforms as transforms
 import numpy as np
 import scipy.linalg as linalg
+import matplotlib.pyplot as plt
 
 from networks import get_network
 from utils.loading import parse_spec
@@ -131,7 +132,6 @@ class DeepPolyLinear(DeepPolyBase):
 
     def forward(self, x: Shape) -> Shape:
         debug("LinIn:", x)
-        # 
         rel_lb = RelationalConstraint(self.weight.data, self.bias.data)
         rel_ub = RelationalConstraint(self.weight.data, self.bias.data, lower=False)
 
@@ -148,7 +148,7 @@ def outputShapeConv2d(input_len,kernel_shape,padding,stride):
     """
     Compute the output shape of a 2D convolution operation image.
     Parameters:
-    input_len (int): The len of the input image.
+    input_len (int): The hight/width of the input image.
     kernel_shape (torch.Tensor): The convolution kernel of shape (out_channels, in_channels, kernel_height, kernel_width).
     padding (int,int): The padding size tuple
     stride (int,int): The stride size tuple
@@ -243,6 +243,7 @@ class DeepPolyConv2d(DeepPolyBase):
         h=w = int(np.sqrt(x.lb.shape[-1]/dim_in))
         output_h,output_w = outputShapeConv2d(h,self.layer.weight.shape,self.layer.padding,self.layer.stride)
         self.bias = self.layer.bias.unsqueeze(1).repeat(1,output_w*output_h).flatten()
+        #print("image",x.lb)
 
         rel_lb = RelationalConstraint(self.weight.data, self.bias.data)
         rel_ub = RelationalConstraint(self.weight.data, self.bias.data, lower=False)
@@ -251,11 +252,10 @@ class DeepPolyConv2d(DeepPolyBase):
         r = (x.ub-x.lb)/2.
 
         #Check that the convolution is correct for c 
-        #real_conv = F.conv2d(c.view(1,dim_in,h,w),self.layer.weight,self.layer.bias,stride=self.layer.stride,padding=self.layer.padding)
+        #real_conv = F.conv2d(c.view(1,dim_in,h,w),self.layer.weight,bias=None,stride=self.layer.stride,padding=self.layer.padding)
         c = self.weight @ c + self.bias
-        #print((real_conv.view(-1)-c).sum())
-
         r = torch.abs(self.weight) @ r
+
         out = Shape(c-r,c+r, rel_lb=rel_lb, rel_ub=rel_ub, parent=x)
         self.print(out)
         return out
@@ -302,6 +302,8 @@ class DeepPolyReLu(DeepPolyBase):
         self.print(out)
         return out
     
+#Not used !  
+'''
 class DeepPolyFlatten(DeepPolyBase):
     def __init__(self, verbose=False, name=""):
         super().__init__(verbose, name)
@@ -311,6 +313,7 @@ class DeepPolyFlatten(DeepPolyBase):
         out = Shape(torch.flatten(x.lb),torch.flatten(x.ub))
         self.print(out)
         return out
+'''
 
 class VerificationHead(nn.Linear):
     """
@@ -337,8 +340,6 @@ def create_analyzer(net: nn.Module, verbose=False):
             layers.append(DeepPolyLinear(layer, name=name, verbose=verbose))
         if isinstance(layer, torch.nn.ReLU):
             layers.append(DeepPolyReLu(layer,0.5, name=name, verbose=verbose))
-        if isinstance(layer, torch.nn.Flatten):
-            layers.append(DeepPolyFlatten(name=name, verbose=verbose))
         if isinstance(layer, torch.nn.Conv2d):
             layers.append(DeepPolyConv2d(layer, name=name, verbose=verbose))
     return nn.Sequential(*layers)
@@ -355,12 +356,12 @@ def analyze(
         param.requires_grad = False
 
     analyzer_net = create_analyzer(net, verbose=False)
-    assert inputs.shape[0] == 1 # Only one batchsize one supported, TODO: generalize, should be easy, just need to add the batch dim to the shape class (and their constructions)
+    #assert inputs.shape[0] == 1 # Only one batchsize one supported, TODO: generalize, should be easy, just need to add the batch dim to the shape class (and their constructions)
     lb = inputs - eps
     ub = inputs + eps
     lb.clamp_(min=min, max=max)
     ub.clamp_(min=min, max=max)
-    
+
     #Add batch dim
     lb = lb.view(-1)
     ub = ub.view(-1)
