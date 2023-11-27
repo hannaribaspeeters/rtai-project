@@ -74,6 +74,7 @@ class Shape:
         rel_lb = self.rel_lb
         rel_ub = self.rel_ub
         node = self.parent
+
         assert (self.lb <= self.ub).all()
 
         while(not node._input):
@@ -325,8 +326,8 @@ class DeepPolyLeakyReLU(DeepPolyBase):
 
     def forward(self, x: Shape) -> Shape:
         alfa = self.layer.negative_slope
+        print(alfa)
         x.backsubstitute()
-
         # Case 1: Below-zero -> propagate(linear with slope=alfa)
         case1 = (x.ub < 0.)
         W_l, b_l = torch.full(x.lb.size(), alfa), torch.zeros_like(x.lb)
@@ -344,15 +345,15 @@ class DeepPolyLeakyReLU(DeepPolyBase):
         # in the case alfa<1 beta is in [alfa, 1]
         # in the case alfa>1 beta is in [1, alfa]
         # I initialize beta to alfa and from there we have to see how we optimize
-        beta = torch.full(x.lb.size(), alfa, requires_grad=False)
+        beta = torch.full(x.lb.size(), alfa)
         beta = beta.float().requires_grad_()
         beta = torch.nn.Parameter(beta)
 
         W_l = torch.where(crossing, beta, W_l)
-        b_l = torch.zeros_like(x.lb)
+        b_l = torch.where(crossing, torch.zeros_like(x.lb), b_l)
 
         W_u = torch.where(crossing, torch.div(x.ub-alfa*x.lb, x.ub-x.lb), W_u)
-        b_u = torch.where(crossing, torch.div(x.ub*x.lb*(1-alfa), x.ub-x.lb), b_u)
+        b_u = torch.where(crossing, torch.div(x.ub*x.lb*(alfa-1), x.ub-x.lb), b_u)
 
         rel_lb = RelationalConstraint(torch.diag(W_l), b_l)
         rel_ub = RelationalConstraint(torch.diag(W_u), b_u, lower=False)
@@ -363,6 +364,7 @@ class DeepPolyLeakyReLU(DeepPolyBase):
         else:
             out = Shape(F.leaky_relu(x.lb, alfa), F.leaky_relu(x.ub, alfa), rel_lb=rel_ub, rel_ub=rel_lb, parent=x)
 
+        #print(sum(out.lb<out.ub).item())
         self.print(out)
 
         return out
