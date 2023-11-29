@@ -6,6 +6,7 @@ import torchvision.transforms as transforms
 import numpy as np
 import scipy.linalg as linalg
 import matplotlib.pyplot as plt
+import time
 
 from networks import get_network
 from utils.loading import parse_spec
@@ -107,15 +108,17 @@ class Shape:
         assert self.ub.isfinite().all()
         assert (self.lb <= self.ub).all()
         self._resolved = True
-        debug("Resolved:", self)
 
 
 
 class DeepPolyBase(torch.nn.Module):
-    def __init__(self, verbose=False, name=""):
+    def __init__(self, verbose=False, name="", requires_backsubstitute=False):
         super().__init__()
         self.verbose = verbose
         self.name = name
+        self.rel_lb = None
+        self.rel_ub = None
+        self.requires_backsubstitute = requires_backsubstitute
 
     def print(self, out):
         if self.verbose:
@@ -125,6 +128,20 @@ class DeepPolyBase(torch.nn.Module):
     def forward(self, x: Shape) -> Shape:
         return x
 
+    def _setup(self, x: Shape) -> None:
+        """
+        Setup the relational constraints for the layer. This is called once before the first forward pass.
+        """
+        raise NotImplementedError()
+    
+    def setup(self, x: Shape) -> Shape:
+        if self.requires_backsubstitute:
+            x.backsubstitute()
+            self._setup(x)
+        if self.rel_lb is None or self.rel_ub is None:
+            self._setup(x)
+        return x        
+
 
 class DeepPolyLinear(DeepPolyBase):
     def __init__(self, layer: nn.Linear, *args, **kwargs):
@@ -133,18 +150,19 @@ class DeepPolyLinear(DeepPolyBase):
         self.weight = layer.weight
         self.bias = layer.bias
 
+    def _setup(self, x: Shape) -> None:
+        self.rel_lb = RelationalConstraint(self.weight.data, self.bias.data)
+        self.rel_ub = RelationalConstraint(self.weight.data, self.bias.data, lower=False)
+
     def forward(self, x: Shape) -> Shape:
-        debug("LinIn:", x)
-        #
-        rel_lb = RelationalConstraint(self.weight.data, self.bias.data)
-        rel_ub = RelationalConstraint(self.weight.data, self.bias.data, lower=False)
+        self.setup(x)
 
         c = (x.lb+x.ub)/2.
         r = (x.ub-x.lb)/2.
         c = torch.matmul(self.weight,c)+self.bias
         r = torch.matmul(torch.abs(self.weight),r)
 
-        out = Shape(c-r, c+r, rel_lb=rel_lb, rel_ub=rel_ub, parent=x)
+        out = Shape(c-r, c+r, rel_lb=self.rel_lb, rel_ub=self.rel_ub, parent=x)
         self.print(out)
         return out
     
@@ -241,16 +259,19 @@ class DeepPolyConv2d(DeepPolyBase):
         #Reshape the weight and bias to be compatible with the linear layer
         self.layer = layer
 
-    def forward(self, x: Shape) -> Shape:
+    def _setup(self, x: Shape) -> None:
         self.weight = conv2dToAfinne(x.lb.shape,self.layer.weight,self.layer.padding,self.layer.stride)
         dim_in = self.layer.weight.shape[1]
-        h=w = int(np.sqrt(x.lb.shape[-1]/dim_in))
+        h = w = int(np.sqrt(x.lb.shape[-1]/dim_in))
         output_h,output_w = outputShapeConv2d(h,self.layer.weight.shape,self.layer.padding,self.layer.stride)
         self.bias = self.layer.bias.unsqueeze(1).repeat(1,output_w*output_h).flatten()
-        #print("image",x.lb)
 
-        rel_lb = RelationalConstraint(self.weight.data, self.bias.data)
-        rel_ub = RelationalConstraint(self.weight.data, self.bias.data, lower=False)
+        self.rel_lb = RelationalConstraint(self.weight.data, self.bias.data)
+        self.rel_ub = RelationalConstraint(self.weight.data, self.bias.data, lower=False)
+
+
+    def forward(self, x: Shape) -> Shape:
+        self.setup(x)
 
         c = (x.lb+x.ub)/2.
         r = (x.ub-x.lb)/2.
@@ -258,7 +279,7 @@ class DeepPolyConv2d(DeepPolyBase):
         c = self.weight @ c + self.bias
         r = torch.abs(self.weight) @ r
 
-        out = Shape(c-r,c+r, rel_lb=rel_lb, rel_ub=rel_ub, parent=x)
+        out = Shape(c-r,c+r, rel_lb=self.rel_lb, rel_ub=self.rel_ub, parent=x)
         self.print(out)
         return out
 
@@ -267,13 +288,11 @@ class DeepPolyConv2d(DeepPolyBase):
 
 class DeepPolyReLu(DeepPolyBase):
     def __init__(self, layer: torch.nn.ReLU, eps: float = 0.5, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+        super().__init__(*args, requires_backsubstitute=True, **kwargs)
         self.layer = layer
         self.eps = eps
 
-    def forward(self, x: Shape) -> Shape:
-        x.backsubstitute()
-
+    def _setup(self, x: Shape) -> None:
         # Case 1: Below-zero -> set to zero
         case1 = (x.ub < 0.)
         W_l, b_l = torch.zeros_like(x.lb), torch.zeros_like(x.lb)
@@ -299,34 +318,41 @@ class DeepPolyReLu(DeepPolyBase):
         W_u = torch.where(crossing, torch.div(x.ub, x.ub-x.lb), W_l)
         b_u = torch.where(crossing, -torch.div(x.ub*x.lb, x.ub-x.lb), b_l)
 
-        rel_ub = RelationalConstraint(torch.diag(W_u), b_u, lower=False)
-        rel_lb = RelationalConstraint(torch.diag(W_l), b_l)
-        out = Shape(F.relu(x.lb),F.relu(x.ub), rel_lb=rel_lb, rel_ub=rel_ub, parent=x)
-        self.print(out)
-        return out
-    
-#Not used !  
-'''
-class DeepPolyFlatten(DeepPolyBase):
-    def __init__(self, verbose=False, name=""):
-        super().__init__(verbose, name)
-    
+        self.rel_ub = RelationalConstraint(torch.diag(W_u), b_u, lower=False)
+        self.rel_lb = RelationalConstraint(torch.diag(W_l), b_l)
+
     def forward(self, x: Shape) -> Shape:
-        # assumes that this is the first layer
-        out = Shape(torch.flatten(x.lb),torch.flatten(x.ub))
+        self.setup(x)
+       
+        out = Shape(F.relu(x.lb),F.relu(x.ub), rel_lb=self.rel_lb, rel_ub=self.rel_ub, parent=x)
         self.print(out)
         return out
-'''
 
 
 class DeepPolyLeakyReLU(DeepPolyBase):
-    def __init__(self, layer: torch.nn.LeakyReLU, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, layer: torch.nn.LeakyReLU, initialization="alpha", *args, **kwargs):
+        super().__init__(*args, requires_backsubstitute=True, **kwargs)
         self.layer = layer
+        self.initialization = initialization
+        self.beta = None
 
-    def forward(self, x: Shape) -> Shape:
+    def init_beta(self, x: Shape) -> None:
         alfa = self.layer.negative_slope
-        print(alfa)
+        # in the case alfa<1 beta is in [alfa, 1]
+        # in the case alfa>1 beta is in [1, alfa]
+        # I initialize beta to alfa and from there we have to see how we optimize
+        
+        beta = torch.full(x.lb.size(), alfa)
+        # beta = torch.where(x.ub >= x.lb, torch.ones_like(x.lb), beta)
+        # random initialization between alfa and 1
+        # beta = torch.rand(x.lb.size())*(1-alfa)+alfa
+        beta = beta.float()
+        beta = torch.nn.Parameter(beta)
+        beta.requires_grad = True
+        self.beta = beta
+
+    def _setup(self, x: Shape) -> None:
+        alfa = self.layer.negative_slope
         x.backsubstitute()
         # Case 1: Below-zero -> propagate(linear with slope=alfa)
         case1 = (x.ub < 0.)
@@ -339,32 +365,36 @@ class DeepPolyLeakyReLU(DeepPolyBase):
         W_u, b_u = torch.where(case2, torch.ones_like(x.lb), W_u), b_u
 
         # Case 3: crossing
-
-        crossing = ~case1 & ~case2
-
-        # in the case alfa<1 beta is in [alfa, 1]
-        # in the case alfa>1 beta is in [1, alfa]
-        # I initialize beta to alfa and from there we have to see how we optimize
-        beta = torch.full(x.lb.size(), alfa)
-        beta = beta.float().requires_grad_()
-        beta = torch.nn.Parameter(beta)
-
-        W_l = torch.where(crossing, beta, W_l)
+        crossing = ~case1 & ~case2      
+        if self.beta is None:
+            self.init_beta(x)
+        else:
+            # clamp beta to alfa
+            if alfa < 1:
+                self.beta.data.clamp_(min=alfa, max=1)  
+            else:
+                self.beta.data.clamp_(min=1, max=alfa)     
+    
+        W_l = torch.where(crossing, self.beta, W_l)
         b_l = torch.where(crossing, torch.zeros_like(x.lb), b_l)
 
         W_u = torch.where(crossing, torch.div(x.ub-alfa*x.lb, x.ub-x.lb), W_u)
         b_u = torch.where(crossing, torch.div(x.ub*x.lb*(alfa-1), x.ub-x.lb), b_u)
 
-        rel_lb = RelationalConstraint(torch.diag(W_l), b_l)
-        rel_ub = RelationalConstraint(torch.diag(W_u), b_u, lower=False)
+        self.rel_lb = RelationalConstraint(torch.diag(W_l), b_l)
+        self.rel_ub = RelationalConstraint(torch.diag(W_u), b_u, lower=False)
 
-        if alfa <= 1:
-            out = Shape(F.leaky_relu(x.lb, alfa), F.leaky_relu(x.ub, alfa), rel_lb=rel_lb, rel_ub=rel_ub, parent=x)
+
+
+
+    def forward(self, x: Shape) -> Shape:
+        self.setup(x)
+        if self.layer.negative_slope <= 1:
+            out = Shape(F.leaky_relu(x.lb, self.layer.negative_slope), F.leaky_relu(x.ub, self.layer.negative_slope), rel_lb=self.rel_lb, rel_ub=self.rel_ub, parent=x)
 
         else:
-            out = Shape(F.leaky_relu(x.lb, alfa), F.leaky_relu(x.ub, alfa), rel_lb=rel_ub, rel_ub=rel_lb, parent=x)
+            out = Shape(F.leaky_relu(x.lb, self.layer.negative_slope), F.leaky_relu(x.ub, self.layer.negative_slope), rel_lb=self.rel_ub, rel_ub=self.rel_lb, parent=x)
 
-        #print(sum(out.lb<out.ub).item())
         self.print(out)
 
         return out
@@ -387,6 +417,29 @@ class VerificationHead(nn.Linear):
     def forward(self, x: Shape) -> Shape:
         return super().forward(x)
     
+class VerifierLoss(nn.Module):
+    """
+    Loss function for the verification head. Returns 0 if the constraint is verified, otherwise
+    returns the maximum violation.
+    """
+    def __init__(self, metric: str) -> None:
+        super().__init__()
+        self.metric = metric
+    
+    def forward(self, x: Shape) -> torch.Tensor:
+        if self.metric == "l2":
+            return torch.norm(x.ub - x.lb, p=2)
+        violations = torch.abs(x.lb[x.lb <= 0])
+        if len(violations) == 0:
+            return torch.zeros(1)
+        if self.metric == "max": # maximum violation    
+            return torch.max(violations)
+        if self.metric == "sum": # sum of violations
+            return torch.sum(violations)
+        raise ValueError(f"Unknown metric {self.metric}")
+        
+    
+
 def create_analyzer(net: nn.Module, verbose=False):
     layers = []
     for name, layer in net.named_modules():
@@ -402,7 +455,11 @@ def create_analyzer(net: nn.Module, verbose=False):
 
 
 def analyze(
-    net: torch.nn.Module, inputs: torch.Tensor, eps: float, true_label: int, min: float = 0, max: float = 1) -> bool:
+    net: torch.nn.Module, inputs: torch.Tensor, eps: float, true_label: int, min: float = 0, max: float = 1, use_time_limit=True, max_epochs=500) -> bool:
+    start = None
+    if use_time_limit:
+        start = time.time()
+        timeout = 60 # seconds
     # Create validation head
     num_classes = net[-1].out_features
     validation_head = VerificationHead(num_classes, true_label)
@@ -413,22 +470,63 @@ def analyze(
         param.requires_grad = False
 
     analyzer_net = create_analyzer(net, verbose=False)
-    #assert inputs.shape[0] == 1 # Only one batchsize one supported, TODO: generalize, should be easy, just need to add the batch dim to the shape class (and their constructions)
     lb = inputs - eps
     ub = inputs + eps
     lb.clamp_(min=min, max=max)
     ub.clamp_(min=min, max=max)
 
-    #Add batch dim
+    # Flatten input
     lb = lb.view(-1)
     ub = ub.view(-1)
-
     input_shape = Shape(lb, ub)
+
+    loss = VerifierLoss("sum")
+    
+    # Beta training loop
+    epoch = 0
+    analyzer_net.train()
+
+    # First push to initialize the relational constraints and parameters
     output_shape = analyzer_net(input_shape)
     output_shape.backsubstitute()
 
     result = (output_shape.lb > 0).all().item()
-    return result
+    if result:
+        return result
+    
+    # count number of parameters
+    num_params = 0
+    for param in analyzer_net.parameters():
+        num_params += param.numel() if param.requires_grad else 0
+
+    # if we have no params, we can just return false
+    if num_params == 0:
+        return False
+    
+    debug(f"Number of parameters: {num_params}")
+    # Train beta
+    optimizer = torch.optim.Adam(analyzer_net.parameters(), lr=0.1)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, 100, 1, eta_min=0.0001)
+    while (start is None or time.time() - start < timeout):
+        optimizer.zero_grad()
+        output_shape = analyzer_net(input_shape)
+        output_shape.backsubstitute()
+
+        result = (output_shape.lb > 0).all().item()
+        if result:
+            debug(f"Epoch {epoch}: Loss:", loss(output_shape).item())
+            return result
+        
+        loss_value = loss(output_shape)
+        loss_value.backward()
+        optimizer.step()
+        scheduler.step()
+        debug(f"Epoch {epoch}: Loss:", loss_value.item(), end="\r")
+        epoch += 1
+        if epoch >= max_epochs:
+            debug()
+            break
+    return False
 
 
 def main():
