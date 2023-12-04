@@ -1,0 +1,39 @@
+net,test case,ground truth,your output,your runtime,your point
+fc_1,img1_mnist_0.0373.txt,not verified,not verified,1.562,0
+fc_1,img6_mnist_0.0419.txt,verified,verified,1.533,1
+fc_1,img7_mnist_0.0915.txt,verified,verified,1.523,1
+fc_2,img2_mnist_0.0908.txt,not verified,not verified,1.546,0
+fc_2,img7_mnist_0.0843.txt,verified,verified,1.566,1
+fc_2,img8_mnist_0.0750.txt,verified,not verified,1.549,0
+fc_3,img2_mnist_0.0615.txt,not verified,timeout (not verified),60,0
+fc_3,img3_mnist_0.0019.txt,verified,verified,1.587,1
+fc_3,img8_mnist_0.0751.txt,verified,verified,1.598,1
+fc_4,img0_mnist_0.1132.txt,not verified,timeout (not verified),60,0
+fc_4,img3_mnist_0.0014.txt,verified,verified,1.598,1
+fc_4,img4_mnist_0.0552.txt,verified,verified,1.631,1
+fc_5,img2_mnist_0.1475.txt,not verified,timeout (not verified),60,0
+fc_5,img7_mnist_0.1009.txt,verified,verified,1.803,1
+fc_5,img8_mnist_0.1020.txt,verified,verified,1.746,1
+fc_6,img2_mnist_0.0386.txt,not verified,timeout (not verified),60,0
+fc_6,img4_mnist_0.0619.txt,verified,verified,1.888,1
+fc_6,img8_mnist_0.0316.txt,verified,verified,2.19,1
+fc_6,img2_cifar10_0.0029.txt,not verified,timeout (not verified),60,0
+fc_6,img3_cifar10_0.0051.txt,not verified,timeout (not verified),60,0
+fc_6,img8_cifar10_0.0029.txt,verified,verified,2.202,1
+fc_7,img0_mnist_0.0598.txt,not verified,timeout (not verified),60,0
+fc_7,img3_mnist_0.0700.txt,verified,verified,1.733,1
+fc_7,img7_mnist_0.0521.txt,verified,verified,1.75,1
+conv_1,img0_mnist_0.1671.txt,not verified,not verified,1.779,0
+conv_1,img6_mnist_0.1120.txt,verified,verified,1.724,1
+conv_1,img8_mnist_0.1272.txt,verified,verified,1.884,1
+conv_2,img0_mnist_0.1211.txt,not verified,timeout (not verified),60,0
+conv_2,img4_mnist_0.0974.txt,verified,verified,1.986,1
+conv_2,img7_mnist_0.1582.txt,verified,verified,2.015,1
+conv_3,img3_cifar10_0.0221.txt,not verified,not verified,3.361,0
+conv_3,img6_cifar10_0.0133.txt,verified,verified,3.41,1
+conv_3,img7_cifar10_0.0124.txt,verified,not verified,3.532,0
+conv_4,img1_mnist_0.1851.txt,not verified,timeout (not verified),60,0
+conv_4,img7_mnist_0.1962.txt,verified,verified,4.943,1
+conv_4,img8_mnist_0.2113.txt,verified,verified,11.985,1
+
+total points: 21
