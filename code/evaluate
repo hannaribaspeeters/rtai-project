@@ -9,9 +9,9 @@ fi
 for net in $all;
 do
 	echo Evaluating network ${net}...
-	for spec in `ls test_cases/${net}`
+	for spec in `ls preliminary_evaluation_test_cases/${net}`
 	do	
 		echo Evaluating spec ${spec}...
-		python code/verifier.py --net ${net} --spec test_cases/${net}/${spec}
+		python code/verifier.py --net ${net} --spec preliminary_evaluation_test_cases/${net}/${spec}
 	done
 done

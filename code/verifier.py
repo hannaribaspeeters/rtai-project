@@ -14,7 +14,7 @@ from utils.loading import parse_spec
 DEVICE = "cpu"
 
 def debug(*args, **kwargs):
-    pass#print(*args, **kwargs)
+    print(*args, **kwargs)
 
 class RelationalConstraint:
     def __init__(self, weight, bias, lower=True): 
@@ -291,6 +291,7 @@ class DeepPolyReLu(DeepPolyBase):
         super().__init__(*args, requires_backsubstitute=True, **kwargs)
         self.layer = layer
         self.eps = eps
+        self.lambda_lb = None
 
     def _setup(self, x: Shape) -> None:
         # Case 1: Below-zero -> set to zero
@@ -305,15 +306,20 @@ class DeepPolyReLu(DeepPolyBase):
 
         # Case 3: Crossing
         # Compute lambda for the lower bound (such that the area is minimal)
-        lambda_lb = torch.ones_like(x.lb)
-        lambda_lb[x.ub <= -x.lb] = 0
+        if self.lambda_lb is None:
+            self.lambda_lb = torch.ones_like(x.lb)
+            self.lambda_lb[x.ub <= -x.lb] = 0
+            self.lambda_lb = torch.nn.Parameter(self.lambda_lb)
+            self.lambda_lb.requires_grad = True
+        else:
+            self.lambda_lb.data.clamp_(min=0, max=1)
 
         # Note to Hanna
         # We can later register as a parameter and learn this lambda
         # lambda_lb = torch.nn.Parameter(lambda_lb)
 
         crossing = ~case1 & ~case2
-        W_l = torch.where(crossing, lambda_lb, W_l)
+        W_l = torch.where(crossing, self.lambda_lb, W_l)
         # We don't need to update b_l, since it is zero
         W_u = torch.where(crossing, torch.div(x.ub, x.ub-x.lb), W_l)
         b_u = torch.where(crossing, -torch.div(x.ub*x.lb, x.ub-x.lb), b_l)
@@ -455,7 +461,7 @@ def create_analyzer(net: nn.Module, verbose=False):
 
 
 def analyze(
-    net: torch.nn.Module, inputs: torch.Tensor, eps: float, true_label: int, min: float = 0, max: float = 1, use_time_limit=False, max_epochs=-1) -> bool:
+    net: torch.nn.Module, inputs: torch.Tensor, eps: float, true_label: int, min: float = 0, max: float = 1, use_time_limit=False, max_epochs=50) -> bool:
     start = None
     if use_time_limit:
         start = time.time()
