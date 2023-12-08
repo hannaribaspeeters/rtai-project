@@ -341,9 +341,10 @@ class DeepPolyLeakyReLU(DeepPolyBase):
         self.layer = layer
         self.initialization = initialization
         self.beta = None
+        self.negative_slope = layer.negative_slope
 
     def init_beta(self, x: Shape) -> None:
-        alfa = self.layer.negative_slope
+        alfa = self.negative_slope
         # in the case alfa<1 beta is in [alfa, 1]
         # in the case alfa>1 beta is in [1, alfa]
         # I initialize beta to alfa and from there we have to see how we optimize
@@ -404,6 +405,12 @@ class DeepPolyLeakyReLU(DeepPolyBase):
         self.print(out)
 
         return out
+
+# class DeepPolyReLu(DeepPolyLeakyReLU):
+#     def __init__(self, layer: torch.nn.ReLU, *args, **kwargs):
+#         setattr(layer, "negative_slope", 0)
+#         super().__init__(layer, *args, **kwargs)
+
 
 class VerificationHead(nn.Linear):
     """
@@ -487,7 +494,7 @@ def analyze(
     input_shape = Shape(lb, ub)
 
     loss = VerifierLoss("sum")
-    
+
     # Beta training loop
     epoch = 0
     analyzer_net.train()
@@ -527,7 +534,7 @@ def analyze(
         loss_value.backward()
         optimizer.step()
         scheduler.step()
-        debug(f"Epoch {epoch}: Loss:", loss_value.item(), end="\r")
+        debug(f"Epoch {epoch}: Loss: {loss_value.item()}: LR: {scheduler.get_last_lr()[0]}", end="\r")
         epoch += 1
         if epoch >= max_epochs and not max_epochs == -1:
             debug()
