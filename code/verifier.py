@@ -286,53 +286,54 @@ class DeepPolyConv2d(DeepPolyBase):
     
 
 
-class DeepPolyReLu(DeepPolyBase):
-    def __init__(self, layer: torch.nn.ReLU, eps: float = 0.5, *args, **kwargs):
-        super().__init__(*args, requires_backsubstitute=True, **kwargs)
-        self.layer = layer
-        self.eps = eps
-        self.lambda_lb = None
+# class DeepPolyReLu(DeepPolyBase):
+#     def __init__(self, layer: torch.nn.ReLU, eps: float = 0.5, *args, **kwargs):
+#         super().__init__(*args, requires_backsubstitute=True, **kwargs)
+#         self.layer = layer
+#         self.eps = eps
+#         self.lambda_lb = None
 
-    def _setup(self, x: Shape) -> None:
-        # Case 1: Below-zero -> set to zero
-        case1 = (x.ub < 0.)
-        W_l, b_l = torch.zeros_like(x.lb), torch.zeros_like(x.lb)
-        W_u, b_u = torch.zeros_like(x.lb), torch.zeros_like(x.lb)
+#     def _setup(self, x: Shape) -> None:
+#         x.backsubstitute()
+#         # Case 1: Below-zero -> set to zero
+#         case1 = (x.ub <= 0.)
+#         W_l, b_l = torch.zeros_like(x.lb), torch.zeros_like(x.lb)
+#         W_u, b_u = torch.zeros_like(x.lb), torch.zeros_like(x.lb)
 
-        # Case 2: Above-zero -> propagate
-        case2 = (x.lb > 0.)
-        W_l, b_l = torch.where(case2, torch.ones_like(x.lb), W_l), b_l
-        W_u, b_u = torch.where(case2, torch.ones_like(x.lb), W_u), b_u
+#         # Case 2: Above-zero -> propagate
+#         case2 = (x.lb >= 0.)
+#         W_l, b_l = torch.where(case2, torch.ones_like(x.lb), W_l), b_l
+#         W_u, b_u = torch.where(case2, torch.ones_like(x.lb), W_u), b_u
 
-        # Case 3: Crossing
-        # Compute lambda for the lower bound (such that the area is minimal)
-        if self.lambda_lb is None:
-            self.lambda_lb = torch.ones_like(x.lb)
-            self.lambda_lb[x.ub <= -x.lb] = 0
-            self.lambda_lb = torch.nn.Parameter(self.lambda_lb)
-            self.lambda_lb.requires_grad = True
-        else:
-            self.lambda_lb.data.clamp_(min=0, max=1)
+#         # Case 3: Crossing
+#         # Compute lambda for the lower bound (such that the area is minimal)
+#         if self.lambda_lb is None:
+#             self.lambda_lb = torch.ones_like(x.lb)
+#             self.lambda_lb[x.ub <= -x.lb] = 0
+#             self.lambda_lb = torch.nn.Parameter(self.lambda_lb)
+#             self.lambda_lb.requires_grad = True
+#         else:
+#             self.lambda_lb.data.clamp_(min=0, max=1)
 
-        # Note to Hanna
-        # We can later register as a parameter and learn this lambda
-        # lambda_lb = torch.nn.Parameter(lambda_lb)
+#         # Note to Hanna
+#         # We can later register as a parameter and learn this lambda
+#         # lambda_lb = torch.nn.Parameter(lambda_lb)
 
-        crossing = ~case1 & ~case2
-        W_l = torch.where(crossing, self.lambda_lb, W_l)
-        # We don't need to update b_l, since it is zero
-        W_u = torch.where(crossing, torch.div(x.ub, x.ub-x.lb), W_l)
-        b_u = torch.where(crossing, -torch.div(x.ub*x.lb, x.ub-x.lb), b_l)
+#         crossing = ~case1 & ~case2
+#         W_l = torch.where(crossing, self.lambda_lb, W_l)
+#         # We don't need to update b_l, since it is zero
+#         W_u = torch.where(crossing, torch.div(x.ub, x.ub-x.lb), W_l)
+#         b_u = torch.where(crossing, -torch.div(x.ub*x.lb, x.ub-x.lb), b_l)
 
-        self.rel_ub = RelationalConstraint(torch.diag(W_u), b_u, lower=False)
-        self.rel_lb = RelationalConstraint(torch.diag(W_l), b_l)
+#         self.rel_ub = RelationalConstraint(torch.diag(W_u), b_u, lower=False)
+#         self.rel_lb = RelationalConstraint(torch.diag(W_l), b_l)
 
-    def forward(self, x: Shape) -> Shape:
-        self.setup(x)
+#     def forward(self, x: Shape) -> Shape:
+#         self.setup(x)
        
-        out = Shape(F.relu(x.lb),F.relu(x.ub), rel_lb=self.rel_lb, rel_ub=self.rel_ub, parent=x)
-        self.print(out)
-        return out
+#         out = Shape(F.relu(x.lb),F.relu(x.ub), rel_lb=self.rel_lb, rel_ub=self.rel_ub, parent=x)
+#         self.print(out)
+#         return out
 
 
 class DeepPolyLeakyReLU(DeepPolyBase):
@@ -350,9 +351,10 @@ class DeepPolyLeakyReLU(DeepPolyBase):
         # I initialize beta to alfa and from there we have to see how we optimize
         
         beta = torch.full(x.lb.size(), alfa)
-        # beta = torch.where(x.ub >= x.lb, torch.ones_like(x.lb), beta)
+        beta = torch.where(x.ub <= -x.lb, beta, torch.ones_like(x.lb))
         # random initialization between alfa and 1
-        # beta = torch.rand(x.lb.size())*(1-alfa)+alfa
+        #beta = torch.rand(x.lb.size())*(1-alfa)+alfa
+
         beta = beta.float()
         beta = torch.nn.Parameter(beta)
         beta.requires_grad = True
@@ -378,7 +380,7 @@ class DeepPolyLeakyReLU(DeepPolyBase):
         else:
             # clamp beta to alfa
             if alfa < 1:
-                self.beta.data.clamp_(min=alfa, max=1)  
+                self.beta.data.clamp_(min=alfa, max=1)
             else:
                 self.beta.data.clamp_(min=1, max=alfa)     
     
@@ -392,27 +394,23 @@ class DeepPolyLeakyReLU(DeepPolyBase):
         self.rel_ub = RelationalConstraint(torch.diag(W_u), b_u, lower=False)
 
 
-
-
     def forward(self, x: Shape) -> Shape:
         self.setup(x)
         if self.layer.negative_slope <= 1:
             out = Shape(F.leaky_relu(x.lb, self.layer.negative_slope), F.leaky_relu(x.ub, self.layer.negative_slope), rel_lb=self.rel_lb, rel_ub=self.rel_ub, parent=x)
-
         else:
             out = Shape(F.leaky_relu(x.lb, self.layer.negative_slope), F.leaky_relu(x.ub, self.layer.negative_slope), rel_lb=self.rel_ub, rel_ub=self.rel_lb, parent=x)
-
         self.print(out)
 
         return out
 
-# class DeepPolyReLu(DeepPolyLeakyReLU):
-#     def __init__(self, layer: torch.nn.ReLU, *args, **kwargs):
-#         setattr(layer, "negative_slope", 0)
-#         super().__init__(layer, *args, **kwargs)
+class DeepPolyReLu(DeepPolyLeakyReLU):
+     def __init__(self, layer: torch.nn.ReLU, *args, **kwargs):
+         setattr(layer, "negative_slope", 0)
+         super().__init__(layer, *args, **kwargs)
 
 
-class VerificationHead(nn.Linear):
+class VerificationHead(DeepPolyLinear):
     """
     Linear layer that verifies that the true class is the largest output. Constraint is verified if
     all values of the output shape lower bound are positive.
@@ -421,11 +419,12 @@ class VerificationHead(nn.Linear):
     x_true - x_other for all classes (and just x_true for the true class)
     """
     def __init__(self, num_classes: int, true_class=False) -> None:
-        super().__init__(num_classes, num_classes, bias=True)
-        self.weight.data = -torch.eye(num_classes) 
-        self.weight.data[:, true_class] = 1
-        self.bias.data = torch.zeros(num_classes)
+        super().__init__(layer=nn.Linear(num_classes,num_classes))
         self.true_class = true_class
+        weight = -torch.eye(num_classes)
+        weight[:,true_class] +=1
+        self.weight = torch.nn.Parameter(data=weight)
+        self.bias = torch.nn.Parameter(data=torch.zeros(num_classes))
     
     def forward(self, x: Shape) -> Shape:
         return super().forward(x)
@@ -459,7 +458,7 @@ def create_analyzer(net: nn.Module, verbose=False):
         if isinstance(layer, nn.Linear):
             layers.append(DeepPolyLinear(layer, name=name, verbose=verbose))
         if isinstance(layer, torch.nn.ReLU):
-            layers.append(DeepPolyReLu(layer,0.5, name=name, verbose=verbose))
+            layers.append(DeepPolyReLu(layer, name=name, verbose=verbose))
         if isinstance(layer, torch.nn.Conv2d):
             layers.append(DeepPolyConv2d(layer, name=name, verbose=verbose))
         if isinstance(layer, torch.nn.LeakyReLU):
@@ -476,13 +475,14 @@ def analyze(
     # Create validation head
     num_classes = net[-1].out_features
     validation_head = VerificationHead(num_classes, true_label)
-    net.add_module("verification_head", validation_head)
 
     # turn off gradients
     for param in net.parameters():
         param.requires_grad = False
 
-    analyzer_net = create_analyzer(net, verbose=False)
+    #add validation head
+    analyzer_net = nn.Sequential(*create_analyzer(net, verbose=False), validation_head)
+
     lb = inputs - eps
     ub = inputs + eps
     lb.clamp_(min=min, max=max)
@@ -493,7 +493,7 @@ def analyze(
     ub = ub.view(-1)
     input_shape = Shape(lb, ub)
 
-    loss = VerifierLoss("sum")
+    loss = VerifierLoss("max")
 
     # Beta training loop
     epoch = 0
@@ -525,7 +525,7 @@ def analyze(
         output_shape = analyzer_net(input_shape)
         output_shape.backsubstitute()
 
-        result = (output_shape.lb > 0).all().item()
+        result = (output_shape.lb >= 0).all().item()
         if result:
             debug(f"Epoch {epoch}: Loss:", loss(output_shape).item())
             return result
@@ -536,7 +536,7 @@ def analyze(
         scheduler.step()
         debug(f"Epoch {epoch}: Loss: {loss_value.item()}: LR: {scheduler.get_last_lr()[0]}", end="\r")
         epoch += 1
-        if epoch >= max_epochs and not max_epochs == -1:
+        if use_time_limit and (epoch >= max_epochs and not max_epochs == -1):
             debug()
             break
     return False
