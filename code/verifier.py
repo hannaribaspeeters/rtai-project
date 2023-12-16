@@ -14,7 +14,8 @@ from utils.loading import parse_spec
 DEVICE = "cpu"
 
 def debug(*args, **kwargs):
-    print(*args, **kwargs)
+    # print(*args, **kwargs)
+    pass
 
 class RelationalConstraint:
     def __init__(self, weight, bias, lower=True): 
@@ -283,58 +284,6 @@ class DeepPolyConv2d(DeepPolyBase):
         self.print(out)
         return out
 
-    
-
-
-# class DeepPolyReLu(DeepPolyBase):
-#     def __init__(self, layer: torch.nn.ReLU, eps: float = 0.5, *args, **kwargs):
-#         super().__init__(*args, requires_backsubstitute=True, **kwargs)
-#         self.layer = layer
-#         self.eps = eps
-#         self.lambda_lb = None
-
-#     def _setup(self, x: Shape) -> None:
-#         x.backsubstitute()
-#         # Case 1: Below-zero -> set to zero
-#         case1 = (x.ub <= 0.)
-#         W_l, b_l = torch.zeros_like(x.lb), torch.zeros_like(x.lb)
-#         W_u, b_u = torch.zeros_like(x.lb), torch.zeros_like(x.lb)
-
-#         # Case 2: Above-zero -> propagate
-#         case2 = (x.lb >= 0.)
-#         W_l, b_l = torch.where(case2, torch.ones_like(x.lb), W_l), b_l
-#         W_u, b_u = torch.where(case2, torch.ones_like(x.lb), W_u), b_u
-
-#         # Case 3: Crossing
-#         # Compute lambda for the lower bound (such that the area is minimal)
-#         if self.lambda_lb is None:
-#             self.lambda_lb = torch.ones_like(x.lb)
-#             self.lambda_lb[x.ub <= -x.lb] = 0
-#             self.lambda_lb = torch.nn.Parameter(self.lambda_lb)
-#             self.lambda_lb.requires_grad = True
-#         else:
-#             self.lambda_lb.data.clamp_(min=0, max=1)
-
-#         # Note to Hanna
-#         # We can later register as a parameter and learn this lambda
-#         # lambda_lb = torch.nn.Parameter(lambda_lb)
-
-#         crossing = ~case1 & ~case2
-#         W_l = torch.where(crossing, self.lambda_lb, W_l)
-#         # We don't need to update b_l, since it is zero
-#         W_u = torch.where(crossing, torch.div(x.ub, x.ub-x.lb), W_l)
-#         b_u = torch.where(crossing, -torch.div(x.ub*x.lb, x.ub-x.lb), b_l)
-
-#         self.rel_ub = RelationalConstraint(torch.diag(W_u), b_u, lower=False)
-#         self.rel_lb = RelationalConstraint(torch.diag(W_l), b_l)
-
-#     def forward(self, x: Shape) -> Shape:
-#         self.setup(x)
-       
-#         out = Shape(F.relu(x.lb),F.relu(x.ub), rel_lb=self.rel_lb, rel_ub=self.rel_ub, parent=x)
-#         self.print(out)
-#         return out
-
 
 class DeepPolyLeakyReLU(DeepPolyBase):
     def __init__(self, layer: torch.nn.LeakyReLU, initialization="alpha", *args, **kwargs):
@@ -423,9 +372,11 @@ class VerificationHead(DeepPolyLinear):
         self.true_class = true_class
         weight = -torch.eye(num_classes)
         weight[:,true_class] +=1
-        self.weight = torch.nn.Parameter(data=weight)
-        self.bias = torch.nn.Parameter(data=torch.zeros(num_classes))
-    
+        self.weight.data = weight
+        self.bias.data = torch.zeros(num_classes)
+        self.weight.requires_grad = False
+        self.bias.requires_grad = False
+
     def forward(self, x: Shape) -> Shape:
         return super().forward(x)
     
@@ -467,21 +418,21 @@ def create_analyzer(net: nn.Module, verbose=False):
 
 
 def analyze(
-    net: torch.nn.Module, inputs: torch.Tensor, eps: float, true_label: int, min: float = 0, max: float = 1, use_time_limit=False, max_epochs=50) -> bool:
+    net: torch.nn.Module, inputs: torch.Tensor, eps: float, true_label: int, min: float = 0, max: float = 1, use_time_limit=True, max_epochs=50) -> bool:
     start = None
     if use_time_limit:
         start = time.time()
-        timeout = 60 # seconds
+        timeout = 20 # seconds
     # Create validation head
     num_classes = net[-1].out_features
-    validation_head = VerificationHead(num_classes, true_label)
+    verification_head = VerificationHead(num_classes, true_label)
 
     # turn off gradients
     for param in net.parameters():
         param.requires_grad = False
 
-    #add validation head
-    analyzer_net = nn.Sequential(*create_analyzer(net, verbose=False), validation_head)
+    # create analyser net and add verification_head
+    analyzer_net = nn.Sequential(*create_analyzer(net, verbose=False), verification_head)
 
     lb = inputs - eps
     ub = inputs + eps
@@ -493,7 +444,7 @@ def analyze(
     ub = ub.view(-1)
     input_shape = Shape(lb, ub)
 
-    loss = VerifierLoss("max")
+    loss = VerifierLoss("sum")
 
     # Beta training loop
     epoch = 0
@@ -512,8 +463,15 @@ def analyze(
     for param in analyzer_net.parameters():
         num_params += param.numel() if param.requires_grad else 0
 
-    # if we have no params, we can just return false
+    # if we have no params, we can just test the output
     if num_params == 0:
+        debug("No parameters to train.")
+        output_shape = analyzer_net(input_shape)
+        output_shape.backsubstitute()
+
+        result = (output_shape.lb >= 0).all().item()
+        if result:
+            return result
         return False
     
     debug(f"Number of parameters: {num_params}")
