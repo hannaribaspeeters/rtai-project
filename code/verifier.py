@@ -418,7 +418,7 @@ def create_analyzer(net: nn.Module, verbose=False):
 
 
 def analyze(
-    net: torch.nn.Module, inputs: torch.Tensor, eps: float, true_label: int, min: float = 0, max: float = 1, use_time_limit=True, max_epochs=50) -> bool:
+    net: torch.nn.Module, inputs: torch.Tensor, eps: float, true_label: int, min: float = 0, max: float = 1, use_time_limit=False, max_epochs=50) -> bool:
     start = None
     if use_time_limit:
         start = time.time()
