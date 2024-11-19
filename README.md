@@ -1,6 +1,8 @@
-# RIAI 2023 Course Project
+# RTAI 2023 Course Project
 
+This is the course project for the Reliable and Trustworthy AI course taught at ETH by Prof. Dr. Martin Vechev. For the course description visit: https://www.sri.inf.ethz.ch/teaching/rtai22
 
+This project was initially hosted in gitlab. You can find it here: [https://gitlab.inf.ethz.ch/course-reliableai-2023/rtai-project-21/-/tree/main/code?ref_type=heads.](https://gitlab.inf.ethz.ch/course-reliableai-2023/rtai-project-21) 
 
 ## Folder structure
 In the directory `code`, you can find 3 files and one folder: 
